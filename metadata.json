@@ -1,0 +1,6 @@
+{
+  "name": "Arah Sinyal Antena TV Digital",
+  "description": "Aplikasi penunjuk arah antena TV digital interaktif dengan peta, kompas, pelacak stasiun MUX se-Indonesia, dan analisis sinyal cerdas AI.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
