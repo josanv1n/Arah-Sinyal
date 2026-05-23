@@ -35,6 +35,84 @@ function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+    // DUAL CAPABILITY: Gemini AI Analysis Proxy using Script Properties keys
+    if (data.actionType === "GEMINI_ANALYZE") {
+      const gKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+      if (!gKey) {
+        return ContentService.createTextOutput(JSON.stringify({ 
+          status: "error", 
+          message: "GEMINI_API_KEY belum dikonfigurasi di Script Properties Apps Script Anda." 
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      
+      const promptBody = "Analisislah penerimaan sinyal TV digital dari stasiun pemancar berikut:\n" +
+                         "- Nama Stasiun MUX: " + (data.stationName || "") + "\n" +
+                         "- Operator: " + (data.operator || "") + "\n" +
+                         "- Frekuensi/Mux: UHF Saluran " + (data.channelFreq || "") + "\n" +
+                         "- Jarak Penerima ke Pemancar: " + (data.distanceKm ? Number(data.distanceKm).toFixed(2) : "Unknown") + " km\n" +
+                         "- Arah Antena (Bearing): " + (data.bearing ? Number(data.bearing).toFixed(1) : "Unknown") + "°\n" +
+                         "- Lokasi Pemancar: " + (data.city || "") + ", " + (data.province || "") + "\n" +
+                         "- Daftar Saluran TV: " + (data.channels ? data.channels.join(", ") : "Tidak ditentukan") + "\n\n" +
+                         "Toleransi halangan: Asumsikan rumah berada di perkotaan padat/semi-perkotaan dengan halangan sedang (medium obstacles seperti pohon/gedung).\n" +
+                         "Berikan saran teknis dalam Bahasa Indonesia yang gaul, keren, modern, praktis, dan singkat (maksimal 150 kata). Tentukan secara matematis yang realistis:\n" +
+                         "1. Jenis Antena yang cocok (Yagi Outdoor High Gain, Yagi Medium, Antena Indoor Grid, dll)\n" +
+                         "2. Tinggi Antena yang disarankan (dalam meter, misal: 10)\n" +
+                         "3. Booster tambahan dibutuhkan? (true atau false)\n" +
+                         "4. Perkiraan tingkat kekuatan sinyal di lokasi dalam dBm (misal: -68, harus bilangan bulat negatif)\n" +
+                         "5. Status Kualitas Sinyal (SANGAT BAIK/BAIK/CUKUP/LEMAH/SANGAT LEMAH)\n" +
+                         "6. Tips optimasi posisi antena mengarah pas ke " + (data.bearing ? Number(data.bearing).toFixed(1) : "Unknown") + "° (bearing) agar siaran lancar bebas freeze.\n\n" +
+                         "Kembalian WAJIB berupa JSON murni dengan format persis seperti ini:\n" +
+                         "{\n" +
+                         "  \"antennaType\": \"misal: Antena Yagi Outdoor High Gain\",\n" +
+                         "  \"antennaHeightMeters\": 10,\n" +
+                         "  \"boosterNeeded\": true,\n" +
+                         "  \"estSignalDb\": -68,\n" +
+                         "  \"estSignalStatus\": \"BAIK\",\n" +
+                         "  \"description\": \"Deskripsi gaul dan teknis mengenai optimasi sinyal TV Anda dan analisis saluran... \"\n" +
+                         "}";
+
+      const payload = {
+        contents: [{
+          parts: [{ text: promptBody }]
+        }],
+        systemInstruction: {
+          parts: [{
+            text: "Anda adalah Asisten Sinyal TV Digital Cerdas Indonesia yang ahli dalam RF (Radio Frequency), pemetaan sinyal UHF, konfigurasi setup antena rumah tangga DVB-T2, dan topografi wilayah Indonesia. Berikan respons dalam output JSON murni."
+          }]
+        },
+        generationConfig: {
+          responseMimeType: "application/json"
+        }
+      };
+      
+      const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + gKey;
+      const options = {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      };
+      
+      const response = UrlFetchApp.fetch(url, options);
+      const resText = response.getContentText();
+      const resJson = JSON.parse(resText);
+      
+      if (resJson.candidates && resJson.candidates[0] && resJson.candidates[0].content && resJson.candidates[0].content.parts[0]) {
+        const resultString = resJson.candidates[0].content.parts[0].text;
+        return ContentService.createTextOutput(JSON.stringify({ 
+          status: "success", 
+          result: JSON.parse(resultString) 
+        })).setMimeType(ContentService.MimeType.JSON);
+      } else {
+        return ContentService.createTextOutput(JSON.stringify({ 
+          status: "error", 
+          message: "Respons Gemini API gagal: " + resText
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // Default: Log action into the History spreadsheet Tab
     let sheet = ss.getSheetByName("History");
     
     if (!sheet) {

@@ -48,13 +48,23 @@ export default function App() {
   const [coordsInput, setCoordsInput] = useState({ lat: "-1.6018", lng: "103.6181" });
 
   // Digital TV MUX selected transmitter state
-  const [selectedStation, setSelectedStation] = useState<MuxStation | null>(null);
+  const [selectedStation, setSelectedStation] = useState<MuxStation | null>(() => {
+    return INDONESIA_MUX_STATIONS.find(s => s.id === "jambi-tvri") || null;
+  });
   const [bearing, setBearing] = useState<number>(0);
   const [distance, setDistance] = useState<number>(0);
   const [fineTuneOffset, setFineTuneOffset] = useState<number>(0);
 
   // AI & Sheets Configuration states
-  const [gasUrl, setGasUrl] = useState(() => localStorage.getItem("gas_url") || "");
+  const [gasUrl, setGasUrl] = useState(() => {
+    const metaEnv = (import.meta as any).env;
+    return (
+      localStorage.getItem("gas_url") || 
+      metaEnv?.VITE_WEB_APP_URL || 
+      metaEnv?.VITE_GAS_URL || 
+      ""
+    );
+  });
   const [showGasModal, setShowGasModal] = useState(false);
   const [logs, setLogs] = useState<ActionLog[]>(() => {
     const localLogs = localStorage.getItem("action_logs");
@@ -210,42 +220,86 @@ export default function App() {
     }, 150);
   };
 
-  // Run AI analysis using server-side Gemini 3.5 Flash
+  // Run AI analysis using server-side Gemini 3.5 Flash or Apps Script integration
   const runAiAnalysis = async () => {
     if (!selectedStation) return;
     setIsAiLoading(true);
     setAiError("");
     setAiReport(null);
 
-    try {
-      const response = await fetch("/api/gemini/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          stationName: selectedStation.name,
-          operator: selectedStation.operator,
-          channelFreq: selectedStation.channelFreq,
-          distanceKm: distance,
-          bearing: bearing,
-          province: selectedStation.province,
-          city: selectedStation.city,
-          channels: selectedStation.channels
-        })
-      });
+    let rawData: any = null;
+    let success = false;
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Gagal mendapatkan analisis AI.");
-      }
+    // 1. Try using the Google Apps Script Web App if the URL is set (centralized key & history)
+    if (gasUrl && gasUrl.includes("exec")) {
+      try {
+        const response = await fetch(gasUrl, {
+          method: "POST",
+          // Notice: DO NOT set headers like 'Content-Type': 'application/json' 
+          // to bypass browser CORS pre-flight checks when calling Google Apps Script!
+          body: JSON.stringify({
+            actionType: "GEMINI_ANALYZE",
+            stationName: selectedStation.name,
+            operator: selectedStation.operator,
+            channelFreq: selectedStation.channelFreq,
+            distanceKm: distance,
+            bearing: bearing,
+            province: selectedStation.province,
+            city: selectedStation.city,
+            channels: selectedStation.channels
+          })
+        });
 
-      const rawData = await response.json();
-      if (rawData.result) {
-        setAiReport(rawData.result);
-      } else {
-        throw new Error("Format analisis AI tidak sesuai.");
+        if (response.ok) {
+          const gasData = await response.json();
+          if (gasData.status === "success" && gasData.result) {
+            rawData = { result: gasData.result };
+            success = true;
+          } else if (gasData.status === "error") {
+            console.warn("Apps Script returned error message:", gasData.message);
+          }
+        }
+      } catch (gasErr: any) {
+        console.warn("Apps Script Gemini call failed or blocked, falling back to server:", gasErr.message);
       }
-    } catch (err: any) {
-      console.warn("Using smart fallback due to error: ", err.message);
+    }
+
+    // 2. Fallback: Try using the application backend Express route
+    if (!success) {
+      try {
+        const response = await fetch("/api/gemini/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stationName: selectedStation.name,
+            operator: selectedStation.operator,
+            channelFreq: selectedStation.channelFreq,
+            distanceKm: distance,
+            bearing: bearing,
+            province: selectedStation.province,
+            city: selectedStation.city,
+            channels: selectedStation.channels
+          })
+        });
+
+        if (response.ok) {
+          rawData = await response.json();
+          success = true;
+        } else {
+          const errData = await response.json();
+          console.warn("Backend Gemini analysis route failed:", errData.error);
+        }
+      } catch (backendErr: any) {
+        console.warn("Backend Gemini call failed:", backendErr.message);
+      }
+    }
+
+    // Assign final report or default to smart offline mathematical estimate model
+    if (success && rawData && rawData.result) {
+      setAiReport(rawData.result);
+      setIsAiLoading(false);
+    } else {
+      console.warn("Using smart native offline fallback analysis model.");
       
       // Standalone intelligent signal analysis fallback model of Indonesian DVB-T2
       const isBoosterNeeded = distance > 25;
@@ -278,7 +332,6 @@ export default function App() {
         estSignalStatus: signalStatus,
         description: recommendationText
       });
-    } finally {
       setIsAiLoading(false);
     }
   };
@@ -302,15 +355,40 @@ export default function App() {
     setAiReport(null);
   };
 
+  // Helper to get matching region ID for a city name to show its TV stations
+  const getRegionForCity = (cityName: string): string => {
+    const name = cityName.toLowerCase();
+    if (name.includes("jambi")) return "sumatera";
+    if (name.includes("jakarta")) return "jabodetabek";
+    if (name.includes("bandung")) return "jabar";
+    if (name.includes("semarang")) return "jateng";
+    if (name.includes("yogyakarta")) return "diy";
+    if (name.includes("surabaya")) return "jatim";
+    if (name.includes("medan")) return "sumatera";
+    if (name.includes("palembang")) return "sumatera";
+    if (name.includes("lampung")) return "sumatera";
+    if (name.includes("banjarmasin")) return "kalimantan";
+    if (name.includes("samarinda")) return "kalimantan";
+    if (name.includes("pontianak")) return "kalimantan";
+    if (name.includes("makassar")) return "sulawesi";
+    if (name.includes("manado")) return "sulawesi";
+    if (name.includes("bali") || name.includes("denpasar")) return "bali-nusra";
+    if (name.includes("mataram")) return "bali-nusra";
+    if (name.includes("kupang")) return "bali-nusra";
+    if (name.includes("serang")) return "jabodetabek";
+    return "all";
+  };
+
   // Helper custom quick sets for Indonesian major cities
   const handleQuickCitySelect = (city: typeof MAJOR_INDONESIAN_CITIES[0]) => {
     setUserLocation({
       lat: city.lat,
       lng: city.lng,
-      address: `Kota ${city.name}`,
+      address: city.name,
       isSimulated: true
     });
     setAiReport(null);
+    setSelectedRegion(getRegionForCity(city.name));
   };
 
   // Clear riwayat action
@@ -369,22 +447,25 @@ export default function App() {
               <MapPin className="w-4.5 h-4.5 text-indigo-900" /> Atur Lokasi TV Anda
             </div>
 
-            {/* Quick pre-configured regions list */}
-            <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar select-none">
-              {MAJOR_INDONESIAN_CITIES.map((c) => (
-                <button
-                  key={c.name}
-                  onClick={() => handleQuickCitySelect(c)}
-                  className={`px-2.5 py-1 text-[10px] font-mono rounded-lg border flex items-center gap-1 shrink-0 transition-all ${
-                    userLocation.address?.includes(c.name)
-                      ? "bg-slate-900 text-slate-100 border-slate-950 font-bold"
-                      : "bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/80"
-                  }`}
-                >
-                  <span>{c.icon}</span>
-                  <span>{c.name}</span>
-                </button>
-              ))}
+            {/* Quick pre-configured regions dropdown (drop list) */}
+            <div className="relative">
+              <select
+                onChange={(e) => {
+                  const cityObj = MAJOR_INDONESIAN_CITIES.find(c => c.name === e.target.value);
+                  if (cityObj) handleQuickCitySelect(cityObj);
+                }}
+                value={MAJOR_INDONESIAN_CITIES.find(c => userLocation.address === c.name || userLocation.address?.includes(c.name))?.name || MAJOR_INDONESIAN_CITIES[0].name}
+                className="w-full text-xs font-sans bg-slate-50 border border-slate-200 p-2.5 pr-10 rounded-xl outline-none appearance-none focus:border-indigo-500 transition cursor-pointer font-bold text-slate-800"
+              >
+                {MAJOR_INDONESIAN_CITIES.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.icon} {c.name}
+                  </option>
+                ))}
+              </select>
+              <div className="absolute right-3 top-3 pointer-events-none flex items-center text-slate-500">
+                <ChevronDown className="w-4 h-4" />
+              </div>
             </div>
 
             {/* Input & auto coordinate selector form */}
